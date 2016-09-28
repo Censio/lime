@@ -9,9 +9,9 @@ setup(name='lime',
       license='BSD',
       packages=['lime'],
       install_requires=[
-          'numpy',
-          'scipy',
-          'scikit-learn'
+          'numpy==1.9.2',
+          'scipy==0.16.0',
+          'scikit-learn==0.16.1'
       ],
       include_package_data=True,
       zip_safe=False)
