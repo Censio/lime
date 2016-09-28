@@ -139,7 +139,7 @@ class LimeTabularExplainer(object):
         self.scaler = None
         self.class_names = class_names
         self.feature_names = feature_names
-        self.scaler = sklearn.preprocessing.StandardScaler(with_mean=False)
+        self.scaler = sklearn.preprocessing.StandardScaler(with_mean=True)
         self.scaler.fit(training_data)
         self.feature_values = {}
         self.feature_frequencies = {}
@@ -160,7 +160,7 @@ class LimeTabularExplainer(object):
             self.feature_frequencies[feature] = (np.array(frequencies) /
                                                  sum(frequencies))
             self.scaler.mean_[feature] = 0
-            self.scaler.scale_[feature] = 1
+            self.scaler.std_[feature] = 1
 
     def explain_instance(self, data_row, classifier_fn, labels=(1,),
                          top_labels=None, num_features=10, num_samples=5000,
@@ -193,7 +193,7 @@ class LimeTabularExplainer(object):
             explanations.
         """
         data, inverse = self.__data_inverse(data_row, num_samples)
-        scaled_data = (data - self.scaler.mean_) / self.scaler.scale_
+        scaled_data = (data - self.scaler.mean_) / self.scaler.std_
 
         distances = sklearn.metrics.pairwise_distances(
             scaled_data,
@@ -280,7 +280,7 @@ class LimeTabularExplainer(object):
             data = np.random.normal(
                 0, 1, num_samples * data_row.shape[0]).reshape(
                 num_samples, data_row.shape[0])
-            data = data * self.scaler.scale_ + self.scaler.mean_
+            data = data * self.scaler.std_ + self.scaler.mean_
             categorical_features = self.categorical_features
             first_row = data_row
         else:
