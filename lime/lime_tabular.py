@@ -9,7 +9,7 @@ import sklearn
 import sklearn.preprocessing
 from . import lime_base
 from . import explanation
-
+import copy 
 
 class TableDomainMapper(explanation.DomainMapper):
     """Maps feature ids to names, generates table views, etc"""
@@ -76,7 +76,6 @@ class TableDomainMapper(explanation.DomainMapper):
         ''' % (exp_object_name, json.dumps(out_list), label, div_name)
         return ret
 
-
 class LimeTabularExplainer(object):
     """Explains predictions on tabular (i.e. matrix) data.
     For numerical features, perturb them by sampling from a Normal(0,1) and
@@ -88,7 +87,9 @@ class LimeTabularExplainer(object):
     def __init__(self, training_data, feature_names=None,
                  categorical_features=None, categorical_names=None,
                  kernel_width=None, verbose=False, class_names=None,
-                 feature_selection='auto', discretize_continuous=True):
+                 feature_selection='auto', discretize_continuous=True,
+                 custom_range=None
+                ):
         """Init function.
 
         Args:
@@ -114,6 +115,12 @@ class LimeTabularExplainer(object):
             discretize_continuous: if True, all non-categorical features will
                 be discretized into quartiles.
         """
+        
+        """
+        Note
+        - use training_data to construct quantile map in case discretize_continuous is True; otherwise, no use
+        
+        """
         self.categorical_names = categorical_names
         self.categorical_features = categorical_features
         if self.categorical_names is None:
@@ -124,7 +131,9 @@ class LimeTabularExplainer(object):
         if discretize_continuous:
             self.discretizer = QuartileDiscretizer(training_data,
                                                    self.categorical_features,
-                                                   feature_names)
+                                                   feature_names,
+                                                   custom_range
+                                                  )
             self.categorical_features = range(training_data.shape[1])
             discretized_training_data = self.discretizer.discretize(
                 training_data)
@@ -140,7 +149,11 @@ class LimeTabularExplainer(object):
         self.class_names = class_names
         self.feature_names = feature_names
         self.scaler = sklearn.preprocessing.StandardScaler(with_mean=True)
-        self.scaler.fit(training_data)
+        ## added
+        i = copy.deepcopy(training_data)
+        i[np.where(training_data==-100)] = -1
+        self.scaler.fit(i)
+        ##
         self.feature_values = {}
         self.feature_frequencies = {}
 
@@ -164,7 +177,7 @@ class LimeTabularExplainer(object):
 
     def explain_instance(self, data_row, classifier_fn, labels=(1,),
                          top_labels=None, num_features=10, num_samples=5000,
-                         distance_metric='euclidean', model_regressor=None):
+                         distance_metric='euclidean', model_regressor=None, manipulate=None):
         """Generates explanations for a prediction.
 
         First, we generate neighborhood data by randomly perturbing features
@@ -192,7 +205,7 @@ class LimeTabularExplainer(object):
             An Explanation object (see explanation.py) with the corresponding
             explanations.
         """
-        data, inverse = self.__data_inverse(data_row, num_samples)
+        data, inverse = self.__data_inverse(data_row, num_samples, manipulate)
         scaled_data = (data - self.scaler.mean_) / self.scaler.std_
 
         distances = sklearn.metrics.pairwise_distances(
@@ -252,7 +265,9 @@ class LimeTabularExplainer(object):
 
     def __data_inverse(self,
                        data_row,
-                       num_samples):
+                       num_samples,
+                       col_idx_manupulate_data
+                      ):
         """Generates a neighborhood around a prediction.
 
         For numerical features, perturb them by sampling from a Normal(0,1) and
@@ -301,12 +316,20 @@ class LimeTabularExplainer(object):
         if self.discretizer is not None:
             inverse[1:] = self.discretizer.undiscretize(inverse[1:])
         inverse[0] = data_row
+        """
+        ## added
+        if col_idx_manupulate_data is not None:
+            for column in col_idx_manupulate_data:
+                mask = inverse[:, column] < -1
+                inverse[mask, column] = -100
+        ##
+        """
         return data, inverse
 
 
 class QuartileDiscretizer:
     """Discretizes data into quartiles."""
-    def __init__(self, data, categorical_features, feature_names):
+    def __init__(self, data, categorical_features, feature_names, custom_range=None):
         """Initializer
 
         Args:
@@ -331,27 +354,46 @@ class QuartileDiscretizer:
         self.mins = {}
         self.maxs = {}
         for feature in to_discretize:
-            qts = np.percentile(data[:, feature], [25, 50, 75])
-            boundaries = np.min(data[:, feature]), np.max(data[:, feature])
             name = feature_names[feature]
-            self.names[feature] = (
-                ['%s <= %.2f' % (name, qts[0]),
-                 '%.2f < %s <= %.2f' % (qts[0], name, qts[1]),
-                 '%.2f < %s <= %.2f' % (qts[1], name, qts[2]),
-                 '%s > %.2f' % (name, qts[2])])
+            boundaries = np.min(data[:, feature]), np.max(data[:, feature])
+            if custom_range is not None and custom_range.get(name) is None:
+                qt = [10, 25, 50, 75, 90]
+                qts = np.percentile(data[:, feature], qt)
+            else:
+                qts = custom_range[name]
+            qts = np.sort(qts)
+            qts_range = zip(qts[:-1], qts[1:])
+            for idx, (start, end) in enumerate(qts_range):
+                if idx == 0:
+                    printout = ['{} <= {:.2f}'.format(name, qts[0]),
+                                '{:.2f} < {} <= {:.2f}'.format(start, name, end)]
+                elif idx == len(qts_range)-1:
+                    printout.extend(
+                        ['{:.2f} < {} <= {:.2f}'.format(start, name, end),
+                         '{} > {:.2f}'.format(name, end)]
+                        )
+                else:
+                    printout.extend(
+                        ['{:.2f} < {} <= {:.2f}'.format(start, name, end)]
+                        )
+            print name
+            print printout
+            print
+            self.names[feature] = (printout)
             self.lambdas[feature] = lambda x, qts=qts: np.searchsorted(qts, x)
             discretized = self.lambdas[feature](data[:, feature])
             self.means[feature] = []
             self.stds[feature] = []
-            for x in range(4):
+            N = len(qts)+1
+            for x in range(N):
                 selection = data[discretized == x, feature]
                 mean = 0 if len(selection) == 0 else np.mean(selection)
                 self.means[feature].append(mean)
                 std = 0 if len(selection) == 0 else np.std(selection)
                 std += 0.00000000001
                 self.stds[feature].append(std)
-            self.mins[feature] = [boundaries[0], qts[0], qts[1], qts[2]]
-            self.maxs[feature] = [qts[0], qts[1], qts[2], boundaries[1]]
+            self.mins[feature] = np.insert(qts,0,boundaries[0])
+            self.maxs[feature] = np.append(qts,boundaries[0])
 
     def discretize(self, data):
         """Discretizes the data.
